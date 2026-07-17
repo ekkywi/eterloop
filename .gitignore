@@ -36,3 +36,21 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+
+# Python & ML Engine
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Database Lokal (Opsional/Testing)
+*.db
+*.sqlite
+*.sqlite3
+
+# Editor / IDE
+.vscode/
+.idea/

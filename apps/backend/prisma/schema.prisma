@@ -1,0 +1,39 @@
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+}
+
+model Candle {
+    id          String      @id     @default(uuid())
+    symbol      String
+    timestamp   DateTime
+    open        Decimal
+    high        Decimal
+    low         Decimal
+    close       Decimal
+    volume      Decimal
+
+    @@unique([symbol, timestamp])
+}
+
+model Sentiment {
+    id              String          @id     @default(uuid())
+    source          String
+    title           String
+    sentiment       String
+    score           Int
+    reasoning       String?
+    timestamp       DateTime        @default(now())
+}
+
+model TradeSimulation {
+    id              String          @id     @default(uuid())
+    symbol          String
+    action          String
+    price           Decimal
+    timestamp       DateTime        @default(now())
+    metadata        Json
+}
