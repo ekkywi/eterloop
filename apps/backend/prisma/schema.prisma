@@ -48,3 +48,12 @@ model ActivePosition {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 }
+
+model MarketConfig {
+    id              String      @id     @default(uuid())
+    symbol          String      @unique
+    isActive        Boolean     @default(true)
+    timeframe       String      @default("15m")
+    createdAt       DateTime    @default(now())
+    updatedAt       DateTime    @updatedAt
+}

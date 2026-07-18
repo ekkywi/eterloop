@@ -9,15 +9,14 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
     private ws!: WebSocket; 
     private reconnectTimeout!: NodeJS.Timeout; 
     
-    private readonly wsSymbol = 'solusdt'; 
-    private readonly dbSymbol = 'SOL/USDT'; 
+    private binanceToDbSymbol: Map<string, string> = new Map();
     
-    private isProcessing = false; 
+    private processingLocks: Map<string, boolean> = new Map();
 
     constructor(private readonly prisma: PrismaService) {}
 
-    onModuleInit() {
-        this.connectWebSocket();
+    async onModuleInit() {
+        await this.connectWebSocket();
     }
 
     onModuleDestroy() {
@@ -27,24 +26,62 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
         clearTimeout(this.reconnectTimeout);
     }
 
-    private connectWebSocket() {
-        const wsUrl = `wss://stream.binance.com:9443/ws/${this.wsSymbol}@miniTicker`;
-        this.logger.log(`Menghubungkan ke Binance WS: ${wsUrl}`);
+    private async connectWebSocket() {
+        const activeMarkets = await this.prisma.db.marketConfig.findMany({
+            where: { isActive: true }
+        });
+
+        if (activeMarkets.length === 0) {
+            this.logger.warn('Tidak ada koin aktif di MarketConfig. WebSocket diam.');
+            return;
+        }
+
+        const streams: string[] = [];
+        this.binanceToDbSymbol.clear();
+
+        for (const market of activeMarkets) {
+            const dbSymbol = market.symbol;
+            const binanceSymbol = dbSymbol.replace('/', '');
+            const streamName = `${binanceSymbol.toLowerCase()}@miniTicker`;
+            
+            streams.push(streamName);
+            this.binanceToDbSymbol.set(binanceSymbol, dbSymbol);
+            this.processingLocks.set(dbSymbol, false);
+        }
+
+        const wsUrl = `wss://stream.binance.com:9443/ws`;
+        this.logger.log(`Menghubungkan ke Binance WS untuk ${streams.length} pair(s)...`);
         
         this.ws = new WebSocket(wsUrl);
 
         this.ws.on('open', () => {
-            this.logger.log('✅ Risk Management (WebSocket) Aktif! Memantau harga real-time...');
+            this.logger.log(`✅ WebSocket Aktif! Mensubscribe: ${streams.join(', ')}`);
+            
+            const subscribeMsg = {
+                method: 'SUBSCRIBE',
+                params: streams,
+                id: 1
+            };
+            this.ws.send(JSON.stringify(subscribeMsg));
         });
 
         this.ws.on('message', async (data: string) => {
-            if (this.isProcessing) return;
-
             try {
                 const parsed = JSON.parse(data);
-                const currentPrice = parseFloat(parsed.c);
+                
+                if (!parsed.c || !parsed.s) return; 
 
-                await this.checkRisk(currentPrice);
+                const currentPrice = parseFloat(parsed.c);
+                const binanceSymbol = parsed.s;
+                
+                const dbSymbol = this.binanceToDbSymbol.get(binanceSymbol);
+                if (!dbSymbol) return;
+
+                if (this.processingLocks.get(dbSymbol)) return;
+
+                this.processingLocks.set(dbSymbol, true);
+                
+                await this.checkRisk(dbSymbol, currentPrice);
             } catch (error) {
                 this.logger.error('Gagal mem-parsing data WebSocket', error);
             }
@@ -68,15 +105,13 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
         }, 5000);
     }
 
-    private async checkRisk(currentPrice: number) {
-        this.isProcessing = true; 
+    private async checkRisk(dbSymbol: string, currentPrice: number) {
         try {
             const activePosition = await this.prisma.db.activePosition.findUnique({
-                where: { symbol: this.dbSymbol }
+                where: { symbol: dbSymbol }
             });
 
             if (!activePosition) {
-                this.isProcessing = false;
                 return;
             }
 
@@ -92,17 +127,17 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
             }
 
             if (isTriggered) {
-                this.logger.warn(`[RISK ALERT] Harga menyentuh batas ${actionType} di ${currentPrice}!`);
+                this.logger.warn(`[RISK ALERT - ${dbSymbol}] Harga menyentuh batas ${actionType} di ${currentPrice}!`);
 
                 const grossPnL = ((currentPrice - activePosition.entryPrice) / activePosition.entryPrice) * 100;
                 
                 await this.prisma.db.activePosition.delete({
-                    where: { symbol: this.dbSymbol }
+                    where: { symbol: dbSymbol }
                 });
 
                 await this.prisma.db.tradeSimulation.create({
                     data: {
-                        symbol: this.dbSymbol,
+                        symbol: dbSymbol,
                         action: 'SELL',
                         price: currentPrice,
                         metadata: {
@@ -113,15 +148,15 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
                     }
                 });
 
-                this.logger.log(`🚨 POSISI DITUTUP. PnL Kotor: ${grossPnL.toFixed(2)}%`);
+                this.logger.log(`🚨 [${dbSymbol}] POSISI DITUTUP. PnL Kotor: ${grossPnL.toFixed(2)}%`);
             }
         } catch (error) {
             const err = error as any;
             if (err.code !== 'P2025') { 
-                this.logger.error('Error saat mengevaluasi Risk Management:', error);
+                this.logger.error(`Error Risk Management [${dbSymbol}]:`, error);
             }
         } finally {
-            this.isProcessing = false; 
+            this.processingLocks.set(dbSymbol, false); 
         }
     }
 }

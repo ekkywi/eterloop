@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
 import { DatabaseModule } from './modules/database/database.module';
 import { CandlesModule } from './modules/candles/candles.module';
 import { MlModule } from './modules/ml/ml.module';
@@ -21,7 +19,7 @@ import { TradingModule } from './modules/trading/trading.module';
     MlModule,
     TradingModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
+  controllers: [],
+  providers: [],
 })
 export class AppModule {}
