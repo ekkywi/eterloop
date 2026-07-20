@@ -102,4 +102,22 @@ export class TradingController {
 
     return positionsWithPnl;
   }
+  
+  @Get('history')
+  @ApiOperation({ summary: 'Mendapatkan summary transaksi (Trade History)' })
+  async getTradeHistory() {
+    const history = await this.prisma.db.tradeSimulation.findMany({
+      orderBy: { timestamp: 'desc' },
+      take: 100
+    });
+
+    return history.map(record => ({
+      id: record.id,
+      symbol: record.symbol,
+      action: record.action,
+      price: Number(record.price),
+      timestamp: record.timestamp,
+      metadata: record.metadata
+    }));
+  }
 }
