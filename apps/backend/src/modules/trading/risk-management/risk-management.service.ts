@@ -103,6 +103,12 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
 
     private async checkRisk(dbSymbol: string, currentPrice: number) {
         try {
+            const [baseAsset, quoteAsset] = dbSymbol.split('/');
+            if (!quoteAsset) {
+                this.logger.error(`Format simbol tidak valid: ${dbSymbol}`);
+                return;
+            }
+
             const activePosition = await this.prisma.db.activePosition.findUnique({
                 where: { symbol: dbSymbol }
             });
@@ -138,7 +144,7 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
                     }),
 
                     this.prisma.db.virtualWallet.update({
-                        where: { asset: 'USDT' },
+                        where: { asset: quoteAsset },
                         data: {
                             locked: { decrement: invested },
                             balance: { increment: amountToReturn }

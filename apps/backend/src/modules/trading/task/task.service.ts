@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { DecisionService } from '../decision/decision.service';
+import { CandlesService } from '../../candles/candles.service';
 import { PrismaService } from '../../database/prisma.service';
 
 @Injectable()
@@ -9,10 +10,11 @@ export class TaskService {
 
     constructor(
         private readonly decisionService: DecisionService,
+        private readonly candlesService: CandlesService,
         private readonly prisma: PrismaService
     ) {}
 
-    @Cron('0 0,15,30,45 * * * *')
+    @Cron('5 0,15,30,45 * * * *')
     async handleTradingCycle() {
         this.logger.log('=== Memulai Siklus Trading 15 Menit ===');
 
@@ -27,11 +29,16 @@ export class TaskService {
             }
 
             for (const market of activeMarkets) {
-                this.logger.log(`Menganalisis peluang untuk ${market.symbol}...`);
+                this.logger.log(`[${market.symbol}] 1. Memulai sinkronisasi data candle terbaru...`);
+                
                 try {
+                    await this.candlesService.syncCandles(market.symbol, '15m'); 
+
+                    this.logger.log(`[${market.symbol}] 2. Menganalisis peluang dengan ML Engine...`);
                     await this.decisionService.evaluateSignal(market.symbol);
+                    
                 } catch (error) {
-                    this.logger.error(`Gagal mengevaluasi ${market.symbol}:`, error);
+                    this.logger.error(`Gagal memproses siklus untuk ${market.symbol}:`, error);
                 }
             }
 

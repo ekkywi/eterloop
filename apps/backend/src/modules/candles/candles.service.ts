@@ -42,7 +42,7 @@ export class CandlesService {
 
             this.logger.log(`Berhasil menyimpan ${result.count} candle baru ke database.`)
             return { inserted: result.count };
-        } catch (error) {
+        } catch (error: any) {
             this.logger.error(`Database error saat menyimpan candle: ${error.message}`);
             throw error;
         }

@@ -22,6 +22,12 @@ export class DecisionService {
     ) {}
 
     async evaluateSignal(symbol: string) {
+        const [baseAsset, quoteAsset] = symbol.split('/');
+        if (!quoteAsset) {
+            this.logger.error(`Format simbol tidak valid: ${symbol}. Harap gunakan format BASE/QUOTE.`);
+            return { action: 'ERROR', reason: 'Invalid symbol format' };
+        }
+
         const prediction = await this.predictionService.predictNextCandle(symbol);
 
         const currentPrice = prediction.current_price;
@@ -43,7 +49,7 @@ export class DecisionService {
         if (priceChangePct > this.MIN_PRICE_MOVEMENT_PCT) {
             if (!activePosition) {
                 const wallet = await this.prisma.db.virtualWallet.findUnique({
-                    where: { asset: 'USDT' }
+                    where: { asset: quoteAsset }
                 });
 
                 if (!wallet) {
@@ -69,7 +75,7 @@ export class DecisionService {
 
                         await this.prisma.db.$transaction([
                             this.prisma.db.virtualWallet.update({
-                                where: { asset: 'USDT' },
+                                where: { asset: quoteAsset },
                                 data: {
                                     balance: { decrement: tradeAmount },
                                     locked: { increment: tradeAmount }
@@ -113,7 +119,7 @@ export class DecisionService {
                         where: { symbol: symbol }
                     }),
                     this.prisma.db.virtualWallet.update({
-                        where: { asset: 'USDT' },
+                        where: { asset: quoteAsset },
                         data: {
                             locked: { decrement: invested },
                             balance: { increment: amountToReturn }
