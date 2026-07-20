@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "ActivePosition" ADD COLUMN     "coinQuantity" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+ADD COLUMN     "investedAmount" DOUBLE PRECISION NOT NULL DEFAULT 0.0;

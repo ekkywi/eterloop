@@ -5,13 +5,14 @@ import WebSocket from 'ws';
 @Injectable()
 export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(RiskManagementService.name);
-    
-    private ws!: WebSocket; 
-    private reconnectTimeout!: NodeJS.Timeout; 
-    
+
+    private ws!: WebSocket;
+    private reconnectTimeout!: NodeJS.Timeout;
+
     private binanceToDbSymbol: Map<string, string> = new Map();
-    
     private processingLocks: Map<string, boolean> = new Map();
+
+    private readonly ROUND_TRIP_FEE_PCT = 0.2;
 
     constructor(private readonly prisma: PrismaService) {}
 
@@ -43,32 +44,27 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
             const dbSymbol = market.symbol;
             const binanceSymbol = dbSymbol.replace('/', '');
             const streamName = `${binanceSymbol.toLowerCase()}@miniTicker`;
-            
+
             streams.push(streamName);
             this.binanceToDbSymbol.set(binanceSymbol, dbSymbol);
             this.processingLocks.set(dbSymbol, false);
         }
 
-        const wsUrl = `wss://stream.binance.com:9443/ws`;
+        const streamPath = streams.join('/');
+        const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streamPath}`;
         this.logger.log(`Menghubungkan ke Binance WS untuk ${streams.length} pair(s)...`);
-        
+
         this.ws = new WebSocket(wsUrl);
 
         this.ws.on('open', () => {
-            this.logger.log(`✅ WebSocket Aktif! Mensubscribe: ${streams.join(', ')}`);
-            
-            const subscribeMsg = {
-                method: 'SUBSCRIBE',
-                params: streams,
-                id: 1
-            };
-            this.ws.send(JSON.stringify(subscribeMsg));
+            this.logger.log(`✅ WebSocket Aktif via Combined Stream! (${streams.length} pairs)`);
         });
 
         this.ws.on('message', async (data: string) => {
             try {
-                const parsed = JSON.parse(data);
-                
+                const rawParsed = JSON.parse(data);
+                const parsed = rawParsed.data || rawParsed;
+
                 if (!parsed.c || !parsed.s) return; 
 
                 const currentPrice = parseFloat(parsed.c);
@@ -88,13 +84,13 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
         });
 
         this.ws.on('close', () => {
-            this.logger.warn('⚠️ WebSocket Terputus! Mencoba reconnect dalam 5 detik...');
+            this.logger.warn('WebSocket Terputus! Mencoba reconnect dalam 5 detik...');
             this.scheduleReconnect();
         });
 
         this.ws.on('error', (error) => {
-            this.logger.error(`❌ WebSocket Error: ${error.message}`);
-            this.ws.close(); 
+            this.logger.error(`WebSocket Error: ${error.message}`);
+            this.ws.close();
         });
     }
 
@@ -118,45 +114,62 @@ export class RiskManagementService implements OnModuleInit, OnModuleDestroy {
             let actionType = '';
             let isTriggered = false;
 
-            if (currentPrice <= activePosition.stopLossPrice) {
+            if(currentPrice <= activePosition.stopLossPrice) {
                 actionType = 'CUT LOSS';
                 isTriggered = true;
-            } else if (currentPrice >= activePosition.takeProfitPrice) {
+            } else if ( currentPrice >= activePosition.takeProfitPrice) {
                 actionType = 'TAKE PROFIT';
                 isTriggered = true;
             }
 
             if (isTriggered) {
-                this.logger.warn(`[RISK ALERT - ${dbSymbol}] Harga menyentuh batas ${actionType} di ${currentPrice}!`);
+                this.logger.warn(`[RISK ALERT - ${dbSymbol}] Harga menyentuh batas ${actionType} di ${currentPrice}`);
 
                 const grossPnL = ((currentPrice - activePosition.entryPrice) / activePosition.entryPrice) * 100;
+                const netPnL = grossPnL - this.ROUND_TRIP_FEE_PCT;
                 
-                await this.prisma.db.activePosition.delete({
-                    where: { symbol: dbSymbol }
-                });
+                const invested = activePosition.investedAmount;
+                const netProfitUsdt = invested * (netPnL / 100);
+                const amountToReturn = invested + netProfitUsdt;
 
-                await this.prisma.db.tradeSimulation.create({
-                    data: {
-                        symbol: dbSymbol,
-                        action: 'SELL',
-                        price: currentPrice,
-                        metadata: {
-                            trigger: actionType,
-                            grossPnL: Number(grossPnL.toFixed(2)),
-                            reason: `Posisi ditutup paksa oleh Risk Management (Target ${actionType} tercapai).`,
+                await this.prisma.db.$transaction([
+                    this.prisma.db.activePosition.delete({
+                        where: { symbol: dbSymbol }
+                    }),
+
+                    this.prisma.db.virtualWallet.update({
+                        where: { asset: 'USDT' },
+                        data: {
+                            locked: { decrement: invested },
+                            balance: { increment: amountToReturn }
                         }
-                    }
-                });
+                    }),
 
-                this.logger.log(`🚨 [${dbSymbol}] POSISI DITUTUP. PnL Kotor: ${grossPnL.toFixed(2)}%`);
+                    this.prisma.db.tradeSimulation.create({
+                        data: {
+                            symbol: dbSymbol,
+                            action: 'SELL',
+                            price: currentPrice,
+                            metadata: {
+                                trigger: actionType,
+                                grossPnL: Number(grossPnL.toFixed(2)),
+                                netPnL: Number(netPnL.toFixed(2)),
+                                netProfitUsdt: Number(netProfitUsdt.toFixed(2)),
+                                reason: `Posisi ditutup pak oleh Risk Management (Target ${actionType} tercapai).`,
+                            }
+                        }
+                    })
+                ]);
+
+                this.logger.log(`[${dbSymbol}] POSISI DITUTUP (${actionType}). Net PnL: ${netPnL.toFixed(2)}% (USDT: $${netProfitUsdt.toFixed(2)})`);
             }
         } catch (error) {
             const err = error as any;
-            if (err.code !== 'P2025') { 
+            if (err.code !== 'P2025') {
                 this.logger.error(`Error Risk Management [${dbSymbol}]:`, error);
             }
         } finally {
-            this.processingLocks.set(dbSymbol, false); 
+            this.processingLocks.set(dbSymbol, false);
         }
     }
 }

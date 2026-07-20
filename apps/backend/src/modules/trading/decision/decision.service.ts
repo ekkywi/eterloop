@@ -5,17 +5,16 @@ import { PrismaService } from '../../database/prisma.service';
 @Injectable()
 export class DecisionService {
     private readonly logger = new Logger(DecisionService.name);
-    
-    // Konfigurasi Biaya & Profit
-    private readonly FEE_PER_TRADE_PCT = 0.1; // 0.1% Binance Base Fee
-    private readonly ROUND_TRIP_FEE_PCT = this.FEE_PER_TRADE_PCT * 2; // Beli (0.1%) + Jual (0.1%) = 0.2%
-    private readonly MIN_NET_PROFIT_PCT = 0.2; // Bersih yang ingin dibawa pulang (di luar fee)
-    
-    // Target pergerakan harga minimum (0.2% + 0.2% = 0.4%)
-    private readonly MIN_PRICE_MOVEMENT_PCT = this.ROUND_TRIP_FEE_PCT + this.MIN_NET_PROFIT_PCT; 
-    
-    private readonly STOP_LOSS_PCT = 0.02; // SL 2%
-    private readonly TAKE_PROFIT_PCT = 0.04; // TP 4% (Target TP juga harus jauh di atas fee)
+
+    private readonly FEE_PER_TRADE_PCT = 0.1;
+    private readonly ROUND_TRIP_FEE_PCT = this.FEE_PER_TRADE_PCT * 2;
+    private readonly MIN_NET_PROFI_PCT = 0.2;
+    private readonly MIN_PRICE_MOVEMENT_PCT = this.ROUND_TRIP_FEE_PCT + this.MIN_NET_PROFI_PCT;
+    private readonly STOP_LOSS_PCT = 0.02;
+    private readonly TAKE_PROFIT_PCT = 0.04;
+
+    private readonly ALLOCATION_PCT = 0.05;
+    private readonly MIN_TRADE_AMOUNT = 10.0
 
     constructor(
         private readonly predictionService: PredictionService,
@@ -24,7 +23,7 @@ export class DecisionService {
 
     async evaluateSignal(symbol: string) {
         const prediction = await this.predictionService.predictNextCandle(symbol);
-        
+
         const currentPrice = prediction.current_price;
         const predictedPrice = prediction.predicted_next_price;
 
@@ -33,7 +32,7 @@ export class DecisionService {
         }
 
         const priceChangePct = ((predictedPrice - currentPrice) / currentPrice) * 100;
-        
+
         const activePosition = await this.prisma.db.activePosition.findUnique({
             where: { symbol: symbol }
         });
@@ -41,42 +40,86 @@ export class DecisionService {
         let action = 'HOLD';
         let reason = `Pergerakan (${priceChangePct.toFixed(2)}%) tidak menutupi round-trip fee (${this.ROUND_TRIP_FEE_PCT}%) dan target profit.`;
 
-        // Logika Sinyal NAIK (BUY)
         if (priceChangePct > this.MIN_PRICE_MOVEMENT_PCT) {
             if (!activePosition) {
-                action = 'BUY';
-                reason = `Prediksi naik ${priceChangePct.toFixed(2)}%. Mengkover fee 0.2% dengan ekspektasi net profit bersih. Buka posisi.`;
-                
-                const stopLoss = currentPrice * (1 - this.STOP_LOSS_PCT);
-                const takeProfit = currentPrice * (1 + this.TAKE_PROFIT_PCT);
-
-                await this.prisma.db.activePosition.create({
-                    data: {
-                        symbol,
-                        entryPrice: currentPrice,
-                        amount: 1, 
-                        stopLossPrice: stopLoss,
-                        takeProfitPrice: takeProfit
-                    }
+                const wallet = await this.prisma.db.virtualWallet.findUnique({
+                    where: { asset: 'USDT' }
                 });
+
+                if (!wallet) {
+                    action = 'HOLD';
+                    reason = `Dompet USDT tidak ditemukan.`;
+                } else {
+                    let tradeAmount = wallet.balance * this.ALLOCATION_PCT;
+
+                    if (tradeAmount < this.MIN_TRADE_AMOUNT) {
+                        tradeAmount = this.MIN_TRADE_AMOUNT;
+                    }
+
+                    if (wallet.balance < tradeAmount) {
+                        action = 'HOLD';
+                        reason = `Prediksi NAIK, tapi Saldo USDT (${wallet.balance.toFixed(2)}) tidak cukup untuk minimum trade ($${tradeAmount.toFixed(2)}).`;
+                    } else {
+                        action = 'BUY';
+                        reason = `Prediksi naik ${priceChangePct.toFixed(2)}%. Position Size: $${tradeAmount.toFixed(2)}. Buka posisi.`;
+
+                        const stopLoss = currentPrice * (1 - this.STOP_LOSS_PCT);
+                        const takeProfit = currentPrice * (1 + this.TAKE_PROFIT_PCT);
+                        const coinQuantity = tradeAmount / currentPrice;
+
+                        await this.prisma.db.$transaction([
+                            this.prisma.db.virtualWallet.update({
+                                where: { asset: 'USDT' },
+                                data: {
+                                    balance: { decrement: tradeAmount },
+                                    locked: { increment: tradeAmount }
+                                }
+                            }),
+                            this.prisma.db.activePosition.create({
+                                data: {
+                                    symbol,
+                                    entryPrice: currentPrice,
+                                    stopLossPrice: stopLoss,
+                                    takeProfitPrice: takeProfit,
+                                    investedAmount: tradeAmount,
+                                    coinQuantity: coinQuantity,
+                                    amount: coinQuantity
+                                }
+                            })
+                        ]);
+                    }
+                }
             } else {
                 action = 'HOLD';
                 reason = `Sinyal NAIK (${priceChangePct.toFixed(2)}%), posisi sudah terbuka. Biarkan profit berjalan.`;
             }
-        } 
-        // Logika Sinyal TURUN (SELL)
+        }
+
         else if (priceChangePct < -this.MIN_PRICE_MOVEMENT_PCT) {
             if (activePosition) {
                 action = 'SELL';
-                
+
                 const grossPnL = ((currentPrice - activePosition.entryPrice) / activePosition.entryPrice) * 100;
-                const netPnL = grossPnL - this.ROUND_TRIP_FEE_PCT; // Kurangi fee dari profit kotor
+                const netPnL = grossPnL - this.ROUND_TRIP_FEE_PCT;
 
-                reason = `Sinyal TURUN (${priceChangePct.toFixed(2)}%). Tutup posisi! Net PnL (setelah fee): ${netPnL.toFixed(2)}%`;
+                const invested = activePosition.investedAmount;
+                const netProfitUsdt = invested * (netPnL / 100);
+                const amountToReturn = invested + netProfitUsdt;
 
-                await this.prisma.db.activePosition.delete({
-                    where: { symbol: symbol }
-                });
+                reason = `Sinyal TURUN (${priceChangePct.toFixed(2)}%). Tutup posisi! Net PnL: ${netPnL.toFixed(2)}% (USDT: $${netProfitUsdt.toFixed(2)})`;
+
+                await this.prisma.db.$transaction([
+                    this.prisma.db.activePosition.delete({
+                        where: { symbol: symbol }
+                    }),
+                    this.prisma.db.virtualWallet.update({
+                        where: { asset: 'USDT' },
+                        data: {
+                            locked: { decrement: invested },
+                            balance: { increment: amountToReturn }
+                        }
+                    })
+                ]);
             } else {
                 action = 'HOLD';
                 reason = `Sinyal TURUN (${priceChangePct.toFixed(2)}%), posisi kosong. Abaikan.`;
@@ -97,7 +140,7 @@ export class DecisionService {
                     }
                 }
             });
-            this.logger.log(`[${symbol}] EKSEKUSI ${action} pada harga ${currentPrice}`);
+            this.logger.log(`[${symbol}] EKSEKUSI ${action} pada harga ${currentPrice} | Reason: ${reason}`);
         } else {
             this.logger.log(`[${symbol}] HOLD - ${reason}`);
         }
@@ -109,4 +152,5 @@ export class DecisionService {
             reason
         };
     }
+
 }

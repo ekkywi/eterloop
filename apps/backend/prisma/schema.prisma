@@ -7,34 +7,34 @@ datasource db {
 }
 
 model Candle {
-    id          String      @id     @default(uuid())
-    symbol      String
-    timestamp   DateTime
-    open        Decimal
-    high        Decimal
-    low         Decimal
-    close       Decimal
-    volume      Decimal
+    id              String      @id     @default(uuid())
+    symbol          String
+    timestamp       DateTime
+    open            Decimal
+    high            Decimal
+    low             Decimal
+    close           Decimal
+    volume          Decimal
 
     @@unique([symbol, timestamp])
 }
 
 model Sentiment {
-    id              String          @id     @default(uuid())
+    id              String       @id     @default(uuid())
     source          String
     title           String
     sentiment       String
     score           Int
     reasoning       String?
-    timestamp       DateTime        @default(now())
+    timestamp       DateTime     @default(now())
 }
 
 model TradeSimulation {
-    id              String          @id     @default(uuid())
+    id              String       @id     @default(uuid())
     symbol          String
     action          String
     price           Decimal
-    timestamp       DateTime        @default(now())
+    timestamp       DateTime     @default(now())
     metadata        Json
 }
 
@@ -45,6 +45,8 @@ model ActivePosition {
   amount            Float
   stopLossPrice     Float
   takeProfitPrice   Float
+  investedAmount    Float       @default(0.0)
+  coinQuantity      Float       @default(0.0)
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 }
@@ -56,4 +58,13 @@ model MarketConfig {
     timeframe       String      @default("15m")
     createdAt       DateTime    @default(now())
     updatedAt       DateTime    @updatedAt
+}
+
+model VirtualWallet {
+  id                String      @id @default(uuid())
+  asset             String      @unique
+  balance           Float       @default(10000.0)
+  locked            Float       @default(0.0)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 }
