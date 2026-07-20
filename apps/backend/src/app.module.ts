@@ -5,7 +5,7 @@ import { DatabaseModule } from './modules/database/database.module';
 import { CandlesModule } from './modules/candles/candles.module';
 import { MlModule } from './modules/ml/ml.module';
 import { TradingModule } from './modules/trading/trading.module';
-
+import { PortfolioModule } from './modules/portfolio/portfolio.module';
 
 @Module({
   imports: [
@@ -18,6 +18,7 @@ import { TradingModule } from './modules/trading/trading.module';
     CandlesModule,
     MlModule,
     TradingModule,
+    PortfolioModule
   ],
   controllers: [],
   providers: [],
