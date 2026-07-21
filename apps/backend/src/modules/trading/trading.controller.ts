@@ -3,6 +3,8 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { DecisionService } from './decision/decision.service';
 import { PrismaService } from '../database/prisma.service';
 import { CandlesService } from '../candles/candles.service';
+import { ExchangeService } from '../candles/exchange.service';
+import { PredictionService } from '../ml/prediction.service';
 import { CreateMarketDto } from './dto/create-market.dto';
 import { SignalQueryDto } from './dto/signal-query.dto';
 
@@ -14,7 +16,9 @@ export class TradingController {
   constructor(
     private readonly decisionService: DecisionService,
     private readonly prisma: PrismaService,
-    private readonly candleService: CandlesService
+    private readonly candleService: CandlesService,
+    private readonly exchangeService: ExchangeService,
+    private readonly predictionService: PredictionService
   ) {}
 
   @Get('signal')
@@ -63,7 +67,7 @@ export class TradingController {
       if (error.code === 'P2002') {
         throw new HttpException('Koin ini sudah terdaftar di database', HttpStatus.CONFLICT);
       }
-      throw new HttpException(error.messaqe, HttpStatus.INTERNAL_SERVER_ERROR);3
+      throw new HttpException(error.messaqe, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 
@@ -119,5 +123,55 @@ export class TradingController {
       timestamp: record.timestamp,
       metadata: record.metadata
     }));
+  }
+
+  @Get('overview')
+  @ApiOperation({ summary: 'Mendapatkan data real-time dan sinyal murni untuk Dashboard (Read-Only)' })
+  async getDashboardOverview() {
+    const markets = await this.prisma.db.marketConfig.findMany({ where: { isActive: true } });
+    
+    const overview = await Promise.all(markets.map(async (market) => {
+      let price = 0;
+      let change24h = 0;
+      let volume = 0;
+      let mlSignal = 'HOLD';
+      let confidence = 0;
+
+      try {
+          const ticker = await this.exchangeService.fetchTicker(market.symbol);
+          price = ticker.price;
+          change24h = ticker.change24h;
+          volume = Number((ticker.volume / 1000000).toFixed(2));
+      } catch (error: any) {
+          this.logger.error(`Gagal tarik ticker ${market.symbol}: ${error.message}`);
+      }
+
+      try {
+          const prediction = await this.predictionService.predictNextCandle(market.symbol);
+          const currentPrice = prediction.current_price;
+          const predictedPrice = prediction.predicted_next_price;
+          
+          if (currentPrice && predictedPrice) {
+              const priceChangePct = ((predictedPrice - currentPrice) / currentPrice) * 100;
+              
+              if (priceChangePct > 0.4) mlSignal = 'BUY';
+              else if (priceChangePct < -0.4) mlSignal = 'SELL';
+              
+              confidence = Math.abs(Number(priceChangePct.toFixed(2))); 
+          }
+      } catch (error: any) {
+          this.logger.error(`Prediksi ML gagal untuk ${market.symbol}: ${error.message}`);
+      }
+      return {
+        symbol: market.symbol,
+        price,
+        change24h,
+        volume,
+        mlSignal,
+        confidence
+      };
+    }));
+
+    return { data: overview };
   }
 }

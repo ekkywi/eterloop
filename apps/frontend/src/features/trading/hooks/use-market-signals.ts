@@ -9,7 +9,7 @@ export const useMarketSignals = () => {
 
     return useQuery<MarketSignal[]>({
         queryKey: ['market-signals', currentMode],
-        queryFn: () => getMarketSignals(currentMode),
+        queryFn: () => getMarketSignals(),
         refetchInterval: 5000,
     });
 };

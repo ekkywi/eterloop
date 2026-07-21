@@ -40,4 +40,18 @@ export class ExchangeService {
             throw error;
         }
     }
+
+    async fetchTicker(symbol: string) {
+        try {
+            const ticker = await this.exchange.fetchTicker(symbol);
+            return {
+                price: ticker.last || 0,
+                change24h: ticker.percentage || 0,
+                volume: ticker.quoteVolume || 0, 
+            };
+        } catch (error: any) {
+            this.logger.error(`Gagal mengambil ticker untuk ${symbol}: ${error.message}`);
+            return { price: 0, change24h: 0, volume: 0 };
+        }
+    }
 }

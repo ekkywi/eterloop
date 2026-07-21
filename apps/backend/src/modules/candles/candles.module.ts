@@ -15,6 +15,6 @@ import { IndicatorsService } from './indicators.service';
     CandlesScheduler,
     IndicatorsService
   ],
-  exports: [CandlesService, IndicatorsService],
+  exports: [CandlesService, IndicatorsService, ExchangeService], 
 })
 export class CandlesModule {}
