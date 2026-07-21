@@ -5,6 +5,11 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  app.enableCors({
+    origin: '*',
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+  });
+
   const config = new DocumentBuilder()
     .setTitle('Eterloop Backend API')
     .setDescription('Dokumentasi API untuk orkestrasi bot trading Eterloop')
