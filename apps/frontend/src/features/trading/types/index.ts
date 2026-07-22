@@ -10,18 +10,18 @@ export interface MarketSignal {
 export interface OpenPosition {
     id: string;
     symbol: string;
-    type: 'LONG' | 'SHORT';
     entryPrice: number;
     currentPrice: number;
-    margin: number;
-    leverage: number;
-    unrealizedPnl: number;
-    pnlPercentage: number;
-  }
+    invested: number;
+    unrealizedPnlPct: number;
+    createdAt: string;
+}
 
-  export interface ExecutionLog {
+export interface ExecutionLog {
     id: string;
+    symbol: string;
+    action: 'BUY' | 'SELL';
+    price: number;
     timestamp: string;
-    level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
-    message: string;
-  }
+    metadata: Record<string, any>;
+}

@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { useMarketSignals } from '../hooks/use-market-signals';
+import { formatPrice } from '@/lib/utils';
 
 export function MarketIntelligence() {
   const { data: signals, isLoading, isError, dataUpdatedAt } = useMarketSignals();
@@ -46,7 +47,7 @@ export function MarketIntelligence() {
               <TableRow key={asset.symbol} className="border-border/50">
                 <TableCell className="font-medium font-mono text-sm">{asset.symbol}</TableCell>
                 <TableCell className="text-right font-mono text-sm">
-                  ${asset.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  ${formatPrice(asset.price)}
                 </TableCell>
                 <TableCell className={`text-right font-mono text-sm ${asset.change24h >= 0 ? 'text-emerald-500' : 'text-destructive'}`}>
                   {asset.change24h > 0 ? '+' : ''}{asset.change24h}%

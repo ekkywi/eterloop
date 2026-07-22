@@ -1,0 +1,16 @@
+{
+  "default": {
+    "last_train_ts": 1784708222845,
+    "last_data_hash": "cd53a855310d114d",
+    "model_path": "/home/hexa/Projects/eterloop/apps/ml-engine/models/../saved_models/xgboost_default.json",
+    "features": [
+      "close",
+      "rsi",
+      "macd",
+      "macd_signal",
+      "atr",
+      "bb_width",
+      "vol_sma"
+    ]
+  }
+}

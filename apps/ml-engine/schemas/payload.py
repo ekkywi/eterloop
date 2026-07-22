@@ -9,3 +9,15 @@ class LinearRegressionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     prediction: float
     confidence_score: float = None
+
+class RawCandle(BaseModel):
+    timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+class XGBoostRequest(BaseModel):
+    symbol: str
+    candles: List[RawCandle]

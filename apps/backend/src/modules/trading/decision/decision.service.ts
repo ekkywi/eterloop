@@ -1,24 +1,19 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { PredictionService } from '../../ml/prediction.service';
 import { PrismaService } from '../../database/prisma.service';
+import { SignalEvaluationService } from '../signal/signal-evaluation.service';
+import { PositionExecutionService } from '../execution/position-execution.service';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class DecisionService {
     private readonly logger = new Logger(DecisionService.name);
 
-    private readonly FEE_PER_TRADE_PCT = 0.1;
-    private readonly ROUND_TRIP_FEE_PCT = this.FEE_PER_TRADE_PCT * 2;
-    private readonly MIN_NET_PROFI_PCT = 0.2;
-    private readonly MIN_PRICE_MOVEMENT_PCT = this.ROUND_TRIP_FEE_PCT + this.MIN_NET_PROFI_PCT;
-    private readonly STOP_LOSS_PCT = 0.02;
-    private readonly TAKE_PROFIT_PCT = 0.04;
-
-    private readonly ALLOCATION_PCT = 0.05;
-    private readonly MIN_TRADE_AMOUNT = 10.0
-
     constructor(
         private readonly predictionService: PredictionService,
-        private readonly prisma: PrismaService
+        private readonly prisma: PrismaService,
+        private readonly signalEvaluationService: SignalEvaluationService,
+        private readonly positionExecutionService: PositionExecutionService,
     ) {}
 
     async evaluateSignal(symbol: string) {
@@ -28,8 +23,7 @@ export class DecisionService {
             return { action: 'ERROR', reason: 'Invalid symbol format' };
         }
 
-        const prediction = await this.predictionService.predictNextCandle(symbol);
-
+        const prediction = await this.predictionService.predictNextCandle(symbol, true);
         const currentPrice = prediction.current_price;
         const predictedPrice = prediction.predicted_next_price;
 
@@ -37,125 +31,102 @@ export class DecisionService {
             throw new InternalServerErrorException('Gagal mengekstrak harga dari ML Engine.');
         }
 
-        const priceChangePct = ((predictedPrice - currentPrice) / currentPrice) * 100;
+        // RC-001: Bungkus seluruh read-check-write dalam transaction Serializable
+        // untuk mencegah race condition antara cron job dan RiskManagement WebSocket.
+        try {
+            const result = await this.prisma.db.$transaction(
+                async (tx) => {
+                    // Gunakan raw query FOR UPDATE untuk mengunci baris ActivePosition
+                    // agar tidak bisa diubah oleh RiskManagement selama evaluasi berlangsung.
+                    const lockedPositions: any[] = await tx.$queryRaw(
+                        Prisma.sql`SELECT * FROM "ActivePosition" WHERE "symbol" = ${symbol} FOR UPDATE`,
+                    );
+                    const activePosition = lockedPositions.length > 0 ? lockedPositions[0] : null;
 
-        const activePosition = await this.prisma.db.activePosition.findUnique({
-            where: { symbol: symbol }
-        });
-
-        let action = 'HOLD';
-        let reason = `Pergerakan (${priceChangePct.toFixed(2)}%) tidak menutupi round-trip fee (${this.ROUND_TRIP_FEE_PCT}%) dan target profit.`;
-
-        if (priceChangePct > this.MIN_PRICE_MOVEMENT_PCT) {
-            if (!activePosition) {
-                const wallet = await this.prisma.db.virtualWallet.findUnique({
-                    where: { asset: quoteAsset }
-                });
-
-                if (!wallet) {
-                    action = 'HOLD';
-                    reason = `Dompet USDT tidak ditemukan.`;
-                } else {
-                    let tradeAmount = wallet.balance * this.ALLOCATION_PCT;
-
-                    if (tradeAmount < this.MIN_TRADE_AMOUNT) {
-                        tradeAmount = this.MIN_TRADE_AMOUNT;
-                    }
-
-                    if (wallet.balance < tradeAmount) {
-                        action = 'HOLD';
-                        reason = `Prediksi NAIK, tapi Saldo USDT (${wallet.balance.toFixed(2)}) tidak cukup untuk minimum trade ($${tradeAmount.toFixed(2)}).`;
-                    } else {
-                        action = 'BUY';
-                        reason = `Prediksi naik ${priceChangePct.toFixed(2)}%. Position Size: $${tradeAmount.toFixed(2)}. Buka posisi.`;
-
-                        const stopLoss = currentPrice * (1 - this.STOP_LOSS_PCT);
-                        const takeProfit = currentPrice * (1 + this.TAKE_PROFIT_PCT);
-                        const coinQuantity = tradeAmount / currentPrice;
-
-                        await this.prisma.db.$transaction([
-                            this.prisma.db.virtualWallet.update({
-                                where: { asset: quoteAsset },
-                                data: {
-                                    balance: { decrement: tradeAmount },
-                                    locked: { increment: tradeAmount }
-                                }
-                            }),
-                            this.prisma.db.activePosition.create({
-                                data: {
-                                    symbol,
-                                    entryPrice: currentPrice,
-                                    stopLossPrice: stopLoss,
-                                    takeProfitPrice: takeProfit,
-                                    investedAmount: tradeAmount,
-                                    coinQuantity: coinQuantity,
-                                    amount: coinQuantity
-                                }
-                            })
-                        ]);
-                    }
-                }
-            } else {
-                action = 'HOLD';
-                reason = `Sinyal NAIK (${priceChangePct.toFixed(2)}%), posisi sudah terbuka. Biarkan profit berjalan.`;
-            }
-        }
-
-        else if (priceChangePct < -this.MIN_PRICE_MOVEMENT_PCT) {
-            if (activePosition) {
-                action = 'SELL';
-
-                const grossPnL = ((currentPrice - activePosition.entryPrice) / activePosition.entryPrice) * 100;
-                const netPnL = grossPnL - this.ROUND_TRIP_FEE_PCT;
-
-                const invested = activePosition.investedAmount;
-                const netProfitUsdt = invested * (netPnL / 100);
-                const amountToReturn = invested + netProfitUsdt;
-
-                reason = `Sinyal TURUN (${priceChangePct.toFixed(2)}%). Tutup posisi! Net PnL: ${netPnL.toFixed(2)}% (USDT: $${netProfitUsdt.toFixed(2)})`;
-
-                await this.prisma.db.$transaction([
-                    this.prisma.db.activePosition.delete({
-                        where: { symbol: symbol }
-                    }),
-                    this.prisma.db.virtualWallet.update({
+                    const wallet = await tx.virtualWallet.findUnique({
                         where: { asset: quoteAsset },
-                        data: {
-                            locked: { decrement: invested },
-                            balance: { increment: amountToReturn }
-                        }
-                    })
-                ]);
-            } else {
-                action = 'HOLD';
-                reason = `Sinyal TURUN (${priceChangePct.toFixed(2)}%), posisi kosong. Abaikan.`;
-            }
-        }
+                    });
 
-        if (action === 'BUY' || action === 'SELL') {
-            await this.prisma.db.tradeSimulation.create({
-                data: {
-                    symbol,
-                    action,
-                    price: currentPrice,
-                    metadata: {
-                        predictedPrice: Number(predictedPrice.toFixed(4)),
-                        priceChangePct: Number(priceChangePct.toFixed(2)),
-                        netPnLEstimate: action === 'SELL' ? reason : null, 
-                        reason,
+                    const decision = this.signalEvaluationService.evaluateExecutionDecision(
+                        prediction,
+                        {
+                            hasOpenPosition: !!activePosition,
+                            walletBalance: wallet?.balance ?? 0,
+                            quoteAsset,
+                        },
+                    );
+
+                    if (decision.action === 'BUY' && decision.tradeAmount && decision.stopLoss && decision.takeProfit) {
+                        // RC-004: openPosition menggunakan $transaction dengan lock pada wallet juga
+                        await this.positionExecutionService.openPositionWithTx(tx, {
+                            symbol,
+                            currentPrice,
+                            tradeAmount: decision.tradeAmount,
+                            quoteAsset,
+                            stopLoss: decision.stopLoss,
+                            takeProfit: decision.takeProfit,
+                            reason: decision.reason,
+                        });
+                    } else if (decision.action === 'SELL' && activePosition) {
+                        await this.positionExecutionService.closePositionWithTx(tx, {
+                            symbol,
+                            currentPrice,
+                            quoteAsset,
+                            entryPrice: Number(activePosition.entryPrice),
+                            investedAmount: Number(activePosition.investedAmount),
+                            metadata: {
+                                predictedPrice: Number(predictedPrice.toFixed(4)),
+                                priceChangePct: Number(decision.priceChangePct.toFixed(2)),
+                                reason: decision.reason,
+                            },
+                        });
+                    } else {
+                        this.logger.log(`[${symbol}] HOLD - ${decision.reason}`);
                     }
-                }
-            });
-            this.logger.log(`[${symbol}] EKSEKUSI ${action} pada harga ${currentPrice} | Reason: ${reason}`);
-        } else {
-            this.logger.log(`[${symbol}] HOLD - ${reason}`);
-        }
 
-        return {
-            symbol,
-            action,
-            currentPrice,
-            reason
-        };
+                    return {
+                        symbol,
+                        action: decision.action,
+                        currentPrice,
+                        reason: decision.reason,
+                    };
+                },
+                {
+                    // RC-001: Isolation level Serializable mencegah phantom reads dan write skew
+                    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+                },
+            );
+
+            return result;
+        } catch (error: any) {
+            // RC-002: Tangani P2025 (record not found) — posisi sudah dihapus oleh RiskManagement
+            if (error.code === 'P2025') {
+                this.logger.warn(
+                    `[${symbol}] Posisi sudah ditutup oleh RiskManagement sebelum cron job sempat mengeksekusi. Dilewati.`,
+                );
+                return {
+                    symbol,
+                    action: 'HOLD',
+                    currentPrice,
+                    reason: 'Position already closed by RiskManagement (concurrent execution)',
+                };
+            }
+
+            // Retry pada serialization failure (PostgreSQL error 40001)
+            if (error.code === 'P2034' || (error.meta && error.meta.code === '40001')) {
+                this.logger.warn(
+                    `[${symbol}] Serialization failure pada transaction. Mungkin concurrent execution. Dilewati siklus ini.`,
+                );
+                return {
+                    symbol,
+                    action: 'HOLD',
+                    currentPrice,
+                    reason: 'Transaction serialization failure — will retry next cycle',
+                };
+            }
+
+            this.logger.error(`[${symbol}] Gagal mengeksekusi keputusan trading: ${error.message}`, error.stack);
+            throw error;
+        }
     }
 }

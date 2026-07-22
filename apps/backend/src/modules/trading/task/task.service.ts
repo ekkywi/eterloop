@@ -32,7 +32,7 @@ export class TaskService {
                 this.logger.log(`[${market.symbol}] 1. Memulai sinkronisasi data candle terbaru...`);
                 
                 try {
-                    await this.candlesService.syncCandles(market.symbol, '15m'); 
+                    await this.candlesService.syncCandles(market.symbol, market.timeframe); 
 
                     this.logger.log(`[${market.symbol}] 2. Menganalisis peluang dengan ML Engine...`);
                     await this.decisionService.evaluateSignal(market.symbol);

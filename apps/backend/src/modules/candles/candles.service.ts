@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { ExchangeService } from './exchange.service';
-import { IndicatorsService } from './indicators.service';
+import { FeatureExtractionService } from './feature-extraction.service';
 
 @Injectable()
 export class CandlesService {
@@ -11,10 +11,14 @@ export class CandlesService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly exchange: ExchangeService,
-        private readonly indicators: IndicatorsService,
+        private readonly featureExtractionService: FeatureExtractionService,
     ) {}
 
-    async syncCandles(symbol: string, timeframe: string, limit: number = 100) {
+    /**
+     * Sinkronisasi candle dari Binance ke database.
+     * Default limit 150 agar selaras dengan kebutuhan ML Engine (getRawCandlesForML).
+     */
+    async syncCandles(symbol: string, timeframe: string, limit: number = 150) {
         this.logger.log(`Memulai sinkronisasi ${limit} candle untuk ${symbol} (${timeframe})...`);
 
         const marketData = await this.exchange.fetchOHLCV(symbol, timeframe, limit);
@@ -49,25 +53,6 @@ export class CandlesService {
     }
 
     async getTechnicalFeatures(symbol: string) {
-        const limit = 100;
-        
-        const candles = await this.prisma.db.candle.findMany({
-            where: { symbol },
-            orderBy: { timestamp: 'desc' },
-            take: limit,
-        });
-
-        if (candles.length < 35) {
-            return null;
-        }
-
-        const closePrices = candles.reverse().map(c => Number(c.close));
-
-        return {
-            currentPrice: closePrices[closePrices.length - 1],
-            rsi_14: this.indicators.calculateRSI(closePrices, 14),
-            macd: this.indicators.calculateMACD(closePrices),
-            ema_20: this.indicators.calculateEMA(closePrices, 20),
-        };
+        return this.featureExtractionService.getCurrentFeatures(symbol);
     }
 }

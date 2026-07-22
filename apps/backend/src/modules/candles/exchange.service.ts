@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import * as ccxt from 'ccxt';
 
 export interface OhlcvData {
@@ -22,7 +22,7 @@ export class ExchangeService {
         });
     }
 
-    async fetchOHLCV(symbol: string, timeframe: string, limit=100): Promise<OhlcvData[]> {
+    async fetchOHLCV(symbol: string, timeframe: string, limit=150): Promise<OhlcvData[]> {
         try {
             const rawData = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
 
@@ -41,6 +41,13 @@ export class ExchangeService {
         }
     }
 
+    /**
+     * AS-002: fetchTicker sekarang throw error alih-alih mengembalikan data palsu.
+     * 
+     * CATATAN: Fungsi ini sekarang hanya digunakan untuk operasi yang MEMBUTUHKAN
+     * harga real-time akurat (seperti manual close position di TradingController).
+     * Dashboard menggunakan MarketDataService cache (WebSocket) — bukan fungsi ini.
+     */
     async fetchTicker(symbol: string) {
         try {
             const ticker = await this.exchange.fetchTicker(symbol);
@@ -51,7 +58,11 @@ export class ExchangeService {
             };
         } catch (error: any) {
             this.logger.error(`Gagal mengambil ticker untuk ${symbol}: ${error.message}`);
-            return { price: 0, change24h: 0, volume: 0 };
+            // AS-002: Throw error instead of returning fake data { price: 0, ... }
+            throw new HttpException(
+                `Gagal mendapatkan harga pasar untuk ${symbol}: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE,
+            );
         }
     }
 }

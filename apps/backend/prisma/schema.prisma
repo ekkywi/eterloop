@@ -19,16 +19,6 @@ model Candle {
     @@unique([symbol, timestamp])
 }
 
-model Sentiment {
-    id              String       @id     @default(uuid())
-    source          String
-    title           String
-    sentiment       String
-    score           Int
-    reasoning       String?
-    timestamp       DateTime     @default(now())
-}
-
 model TradeSimulation {
     id              String       @id     @default(uuid())
     symbol          String
@@ -42,7 +32,6 @@ model ActivePosition {
   id                String      @id     @default(uuid())
   symbol            String      @unique
   entryPrice        Float
-  amount            Float
   stopLossPrice     Float
   takeProfitPrice   Float
   investedAmount    Float       @default(0.0)
